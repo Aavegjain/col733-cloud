@@ -105,7 +105,8 @@ class CkptAckRecvMsg(RcvMsg):
 
   def update(self, state: CoordinatorState, source: str) -> Optional[PHASE]:
     pass
-    # TODO: Take appropriate action when coordinator receives checkpoint_ack message from a worker
+    # TODO: Take appropriate action when coordinator receives checkpoint_ack message from a worker\
+    # update state of worker. update last_ckpt_id 
 
 
 class LastCkptAckRecvMsg(RcvMsg):

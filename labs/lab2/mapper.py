@@ -28,6 +28,7 @@ class MapperState:
   reducer_ports: list[int]
   pid: int
   id: str
+  # last ckpt id which has been checkpointed in fs
   last_cp_id: int
   c_socket: socket.socket
   last_stream_id: bytes = b"0"
@@ -37,9 +38,13 @@ class MapperState:
 
   # TCP Connection to the reducers
   def __post_init__(self):
+    # called after __init__. MapperState is dataclass so init generated
+     by py 
+    # UDP 
     self.c_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     logging.info(f"{self.id} Connecting to reducers")
     for i in range(len(self.reducer_ports)):
+      # TCP
       conn = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
       while True:
         try:
@@ -57,6 +62,7 @@ class MapperState:
     self.c_socket.sendto(msg.serialize(), ("localhost", COORDINATOR_PORT))
 
   # use this function to create a mapper's checkpoint
+  # stream id is checkpointed
   def checkpoint(self, checkpoint_id: int):
     logging.info(f"{self.id} performing checkpointing of its stream ID")
     os.makedirs('checkpoints', exist_ok=True)
@@ -67,13 +73,30 @@ class MapperState:
 
   # mapper recovering
   def recover(self, recovery_id: int, checkpoint_id: int):
+    
+    # read checkpoint_id file and update stream id 
+    # if ckpt id is neg then reset stream id 
+    if (checkpoint_id < 0):
+      self.last_stream_id = b"0" 
+    else:
+      filename = f"checkpoints/{self.id}_{checkpoint_id}.txt"
+      try:
+        line = ""
+        with open(filename, 'r') as file:
+          # Read the first line from the file
+          line = file.readline()
+          logging.debug(f"{self.id}: read {line} from filename: {filename}") 
+        self.last_stream_id = line.encode() 
+      except Exception as e:
+        logging.error(f"{self.id}: recovery failed: {e}") 
+        return 
     self.last_recovery_id = recovery_id
-    # TODO
+    self.last_checkpoint_id = checkpoint_id 
 
   # this hashing function will tell, to which reducer we should send a corresponding word
   # it returns the socket of the reducer
   def word_2_socket(self, word: str) -> socket.socket:
-      if word[0] < 'm': # hashing function
+      if word[0] < 'm': # hashing function wtf ? 
         return self.reducer_sockets[0]
       else:
         return self.reducer_sockets[1]
@@ -110,9 +133,35 @@ class Checkpoint(Cmd):
   checkpoint_id: int
   recovery_id: int
 
+  def send_marker(self, reducer_socket : socket.socket , state: MapperState):
+    msg_bytes = Message(msg_type = MT.FWD_CHECKPOINT, source = state.id, checkpoint_id = state.last_cp_id, recovery_id = state.recovery_id).serialize()
+    reducer_socket.sendall(msg_bytes) 
+    
+
   def handle(self, state: MapperState):
     # TODO: this mapper received checkpoint marker from coordinator. Take appropriate actions.
-    pass
+    # 1. checkpoint and update state  2. send marker to reducer 3. send ack to coord 4. 
+   
+    logging.debug(f"{state.id}: checkpointing for ckpt id: {self.checkpoint_id} and red_id: {self.recovery_id}")
+    state.checkpoint(self.checkpoint_id) 
+
+    state.last_cp_id = self.checkpoint_id # not reqd as done in state.checkpoint
+    # do not update recovery id here, otherwise in flight msg might not be detected by reducer
+    
+    logging.debug(f"{state.id}: sending ckpt markers to reducer sockets")
+    # send markers to reducers 
+    for reducer_socket in state.reducer_sockets:
+      self.send_marker(reducer_socket, state) 
+    
+    logging.debug(f"{state.id}: sending checkpoint ack to coord")
+    # send ack to coordinator
+    if (self.checkpoint_id != 0):
+      ckpt_ack_msg = Message(msg_type = MT.CHECKPOINT_ACK, source = state.id, checkpoint_id = self.checkpoint_id)  
+    else:
+      ckpt_ack_msg = Message(msg_type = MT.LAST_CHECKPOINT_ACK , source = state.id, checkpoint_id = self.checkpoint_id)   
+    state.to_coordinator(ckpt_ack_msg) 
+    logging.debug(f"{state.id}: checkpoint complete for id {self.checkpoint_id}" )
+
 
 @dataclass
 class Recover(Cmd):
@@ -121,7 +170,14 @@ class Recover(Cmd):
 
   def handle(self, state: MapperState):
     # TODO: This mapper need to recover from failure.
-    pass
+    # recover state and send recover ack to coord 
+    logging.debug(f"{state.id}: recovering state")
+    state.recover(self.recovery_id, self.checkpoint_id) 
+    logging.debug(f"{state.id}: sending recover_ack")
+    recv_ack_msg = Message(msg_type = MT.RECOVERY_ACK, source = state.id, recovery_id = self.recovery_id)   
+    state.to_coordinator(recv_ack_msg) 
+    logging.debug(f"{state.id}: recovery complete for recv id {self.recovery_id}" )
+
 
 @dataclass
 class Exit(Cmd):
@@ -203,6 +259,7 @@ class Mapper(Process):
         logging.error(f"Heartbeat error: {e}")
 
   def handle_coordinator(self, coordinator_conn: socket.socket, cmd_q: queue.Queue[Cmd]):
+    # coordinator_conn is self.state.c_socket 
     while True:
       try:
         response, _ = coordinator_conn.recvfrom(1024)
@@ -218,17 +275,20 @@ class Mapper(Process):
           try:
             cmd_q.put(Checkpoint(checkpoint_id=checkpoint_id, recovery_id=recovery_id))
           except Exception as e:
-            logging.error(f"Error: {e}")
+            logging.error(f"(error in putting checkpoint cmd in queue)Error: {e}")
         elif message.msg_type == MT.RECOVER:
+          # why no try except here like for checkpoint 
           recovery_id = message.kwargs['recovery_id']
           checkpoint_id = message.kwargs['checkpoint_id']
           logging.info(f"{self.id} received recover request from {message.source} "
                        f"with id = {checkpoint_id} and recovery_id = {recovery_id}")
           cmd_q.put(Recover(checkpoint_id=checkpoint_id, recovery_id=recovery_id))
         elif message.msg_type == MT.EXIT:
+          # why no try except here like for checkpoint 
           logging.info(f"{self.id} received EXIT marker from {message.source}")
           cmd_q.put(Exit())
-
+        else:
+          logging.error(f"uknown message type received to {self.id}") 
       except Exception as e:
         logging.error(f"Error: {e}")
         
@@ -246,6 +306,8 @@ class Mapper(Process):
       last_cp_id=0,
       c_socket=socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     )
+
+    # shouldn't cmd handler be started first ? 
 
     # thread to handle messages from the coordinator
     state.c_socket.bind(("localhost", self.listenPort))

@@ -58,6 +58,7 @@ class ReducerState:
     self.c_socket.sendto(msg.serialize(), ("localhost", COORDINATOR_PORT))
 
   # use this function to create a reducer's checkpoint
+  # wc is checkpointed
   def checkpoint(self, checkpoint_id: int):
     os.makedirs('checkpoints', exist_ok=True)
     filename = f"checkpoints/{self.id}_{checkpoint_id}.txt"
@@ -68,6 +69,23 @@ class ReducerState:
   # reducer recovering
   def recover(self, recovery_id: int, checkpoint_id: int):
     # TODO: Recover from checkpoint
+    logging.debug(f"{self.id}: recovering from ${recovery_id}")
+    if (checkpoint_id < 0):
+      # clear wc 
+      logging.debug(f"{self.id}: resetting wc since ckpt_id={self.checkpoint_id}")
+      self.wc = defaultdict(int)
+    else:
+      filename = f"checkpoints/{self.id}_{checkpoint_id}.txt"
+      try:
+        read_wc = dict()
+        with open(filename, 'r') as file:
+          read_wc = json.load(file)
+        # reset wc 
+        logging.debug(f"{self.id}: resetting wc, read wc is {read_wc}")
+        self.wc = read_wc 
+      except Exception as e:
+        logging.error(f"{self.id}: recovery failed: {e}") 
+        return 
     self.last_recovery_id = recovery_id
 
   def exit(self):
@@ -103,7 +121,27 @@ class CPMarker(Cmd):
 
   def handle(self, state: ReducerState):
     # TODO: this reducer has to checkpoint. Take appropriate actions.
-    pass
+    # assuming marker receiver received from all mappers
+    # 1. checkpoint and update state  2. send ack  
+    if (self.recovery_id == state.last_recovery_id):
+      logging.debug(f"{state.id}: checkpointing for ckpt id: {self.checkpoint_id} and red_id: {self.recovery_id}")
+      state.checkpoint(self.checkpoint_id) 
+      state.last_cp_id = self.checkpoint_id # done also in state.checkpoint
+
+      logging.debug(f"{state.id}: sending checkpoint ack to coord")
+      # send ack to coordinator
+      if (self.checkpoint_id != 0):
+        ckpt_ack_msg = Message(msg_type = MT.CHECKPOINT_ACK, source = state.id, checkpoint_id = self.checkpoint_id)  
+      else:
+        ckpt_ack_msg = Message(msg_type = MT.LAST_CHECKPOINT_ACK , source = state.id, checkpoint_id = self.checkpoint_id)   
+      state.to_coordinator(ckpt_ack_msg) 
+      logging.debug(f"{state.id}: checkpoint complete for id {self.checkpoint_id}" )
+
+    else:
+      logging.warning(
+        f"{state.id}: Ignoring in-flight messages with recovery_id = {self.recovery_id}.My recovery_id = {state.last_recovery_id}")
+
+
 
 
 class Recover(Cmd):
@@ -113,7 +151,14 @@ class Recover(Cmd):
 
   def handle(self, state: ReducerState):
     # TODO: This reducer need to recover from failure.
-    pass
+    logging.debug(f"{state.id}: recovering state")
+    state.recover(self.recovery_id, self.checkpoint_id) 
+    logging.debug(f"{state.id}: sending recover_ack")
+    recv_ack_msg = Message(msg_type = MT.RECOVERY_ACK, source = state.id, recovery_id = self.recovery_id)   
+    state.to_coordinator(recv_ack_msg) 
+    logging.debug(f"{state.id}: recovery complete for recv id {self.recovery_id}" )
+
+    
 
 
 class WC(Cmd):
@@ -170,6 +215,7 @@ class Reducer(Process):
     self.cp_marker: dict[int, int] = {}
     for i in range(num_mappers):
       self.cp_marker[i] = -1
+    self.current_cp_marker = -1 
 
   def send_heartbeat(self, heartbeat_socket: socket.socket):
     coordinator_addr = ("localhost", COORDINATOR_PORT)
@@ -256,3 +302,5 @@ class Reducer(Process):
         client_handler.start()
     except Exception as e:
       logging.error(f"Error: {e}")
+
+    # no joining  ? (not required i think, since state.exit() will kill this process)
