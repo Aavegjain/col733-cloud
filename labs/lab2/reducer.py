@@ -87,6 +87,7 @@ class ReducerState:
         logging.error(f"{self.id}: recovery failed: {e}") 
         return 
     self.last_recovery_id = recovery_id
+    self.last_checkpoint_id = checkpoint_id 
 
   def exit(self):
     # Break existing map threads by re-opening sockets. while loop will create new ones
@@ -215,7 +216,7 @@ class Reducer(Process):
     self.cp_marker: dict[int, int] = {}
     for i in range(num_mappers):
       self.cp_marker[i] = -1
-    self.current_cp_marker = -1 
+    self.update_mapper_idx = 0 # the mapper which puts the ckpt cmd in queue 
 
   def send_heartbeat(self, heartbeat_socket: socket.socket):
     coordinator_addr = ("localhost", COORDINATOR_PORT)
@@ -258,7 +259,20 @@ class Reducer(Process):
 
         if message.msg_type == MT.FWD_CHECKPOINT:  # received checkpoint marker
           # TODO
-          pass
+          mapper_name = message.source 
+          assert(mapper_name.startswith("Mapper")) 
+          mapper_id = int(mapper_name[7:])  
+          logging.debug(f"{self.id}: checkpoint marker received from mapper {mapper_name}")
+          self.cp_marker[mapper_id] = int(message.kwargs.get("checkpoint_id"))
+          barrier.wait() 
+          if (mapper_id == self.update_mapper_idx):
+            for i in range(num_mappers):
+              assert(self.cp_marker[i] == self.cp_marker[self.update_mapper_idx])
+            
+            recovery_id = message.kwargs.get("recovery_id")
+            logging.debug(f"{self.id}: {self.update_mapper_idx} putting marker {self.cp_marker[self.update_mapper_idx]} and recovery id: {recovery_id}")
+            cmd_q.put(CPMarker(self.cp_marker[self.update_mapper_idx], recovery_id))
+          logging.debug(f"{self.id}: mapper {mapper_name} thread will now process next msg") 
         else:
           assert message.msg_type == MT.WORD_COUNT
           key = message.kwargs.get('key')
