@@ -31,7 +31,7 @@ def generate_csv_files(folder_path, n, file_size_mb, num_words_per_row=10):
         print(f'Generated {filename} with approximately {file_size_mb} MB.')
 
 folder_path = 'csv_files'
-n = 5000  # Number of CSV files to generate
+n = 600  # Number of CSV files to generate
 file_size_mb = 1 
 
 generate_csv_files(folder_path, n, file_size_mb)

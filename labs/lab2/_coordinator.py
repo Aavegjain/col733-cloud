@@ -44,16 +44,21 @@ class Coordinator(Process):
 
   def initialize_workers(self):
     # start reducers
+    
+    logging.info("starting reducers")
+
     for _, ws in self.global_state.workers.items():
       if not ws.is_mapper:
         ws.start_worker()
 
     time.sleep(2)
 
+    logging.info("starting mappers")
     # start mappers
     for _, ws in self.global_state.workers.items():
       if ws.is_mapper:
         ws.start_worker()
+    logging.info("started all workers")
 
   def kill_worker(self, id: str):
     for w in self.global_state.workers.values():
@@ -85,7 +90,10 @@ class Coordinator(Process):
     elif self._recovery_test_mode == self.RecoveryTestModes.TEST_MAPPER:
       while True:
         time.sleep(3)
-        self.kill_worker(id=f"Mapper_{random.randrange(0, NUM_MAPPERS)}")
+        id = random.randrange(0, NUM_MAPPERS)
+        logging.critical(f"killing mapper_{id}")
+        self.kill_worker(id=f"Mapper_{id}")
+        # self.kill_worker(id=f"Mapper_{random.randrange(0, NUM_MAPPERS)}")
 
     elif self._recovery_test_mode == self.RecoveryTestModes.TEST_BOTH:
       while True:
