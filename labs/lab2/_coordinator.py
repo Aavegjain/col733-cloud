@@ -89,7 +89,7 @@ class Coordinator(Process):
 
     elif self._recovery_test_mode == self.RecoveryTestModes.TEST_MAPPER:
       while True:
-        time.sleep(3)
+        time.sleep(3.5)
         id = random.randrange(0, NUM_MAPPERS)
         logging.critical(f"killing mapper_{id}")
         self.kill_worker(id=f"Mapper_{id}")
@@ -97,7 +97,7 @@ class Coordinator(Process):
 
     elif self._recovery_test_mode == self.RecoveryTestModes.TEST_BOTH:
       while True:
-        time.sleep(3)
+        time.sleep(3.5)
         self.kill_worker(id=f"Reducer_{random.randrange(0, NUM_REDUCERS)}")
         self.kill_worker(id=f"Mapper_{random.randrange(0, NUM_MAPPERS)}")
 

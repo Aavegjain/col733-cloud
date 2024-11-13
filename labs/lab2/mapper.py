@@ -35,6 +35,7 @@ class MapperState:
   last_recovery_id: int = 0
   reducer_sockets: list[socket.socket] = field(default_factory=list)
   is_wc_done: bool = False
+  is_recovering: bool = False 
 
   # TCP Connection to the reducers
   def __post_init__(self):
@@ -97,7 +98,7 @@ class MapperState:
 
   # mapper recovering
   def recover(self, recovery_id: int, checkpoint_id: int):
-    
+    self.is_recovering = True 
     # read checkpoint_id file and update stream id 
     # if ckpt id is neg then reset stream id 
     if (checkpoint_id < 0):
@@ -116,7 +117,11 @@ class MapperState:
         logging.error(f"{self.id}: recovery failed: {e}") 
         return 
     self.last_recovery_id = recovery_id
-    self.last_cp_id = checkpoint_id 
+    self.is_recovering = False 
+    if (checkpoint_id != -1):
+      self.last_cp_id = checkpoint_id 
+    else:
+      self.last_cp_id = 0 # no checkpoint made 
     self.is_wc_done = False 
 
   # this hashing function will tell, to which reducer we should send a corresponding word
@@ -181,21 +186,21 @@ class Checkpoint(Cmd):
     
     # do not update recovery id here, otherwise in flight msg might not be detected by reducer
     
-    logging.info(f"{state.id}: sending ckpt markers to reducer sockets")
+    # logging.info(f"{state.id}: sending ckpt markers to reducer sockets")
     # send markers to reducers 
     # for reducer_socket in state.reducer_sockets:
       # self.send_marker(reducer_socket, state)
     for i in range(len(state.reducer_sockets)):
       self.send_marker(i, state) 
     
-    logging.info(f"{state.id}: sending checkpoint ack to coord")
+    # logging.info(f"{state.id}: sending checkpoint ack to coord")
     # send ack to coordinator
     if (self.checkpoint_id != 0):
       ckpt_ack_msg = Message(msg_type = MT.CHECKPOINT_ACK, source = state.id, checkpoint_id = self.checkpoint_id, recovery_id = state.last_recovery_id)  
     else:
       ckpt_ack_msg = Message(msg_type = MT.LAST_CHECKPOINT_ACK , source = state.id, checkpoint_id = self.checkpoint_id, recovery_id = state.last_recovery_id)   
     state.to_coordinator(ckpt_ack_msg) 
-    logging.info(f"{state.id}: checkpoint complete for id {self.checkpoint_id}" )
+    # logging.info(f"{state.id}: checkpoint complete for id {self.checkpoint_id}" )
 
 
 @dataclass
@@ -206,9 +211,9 @@ class Recover(Cmd):
   def handle(self, state: MapperState):
     # TODO: This mapper need to recover from failure.
     # recover state and send recover ack to coord 
-    logging.info(f"{state.id}: recovering state")
+    # logging.info(f"{state.id}: recovering state")
     state.recover(self.recovery_id, self.checkpoint_id) 
-    logging.info(f"{state.id}: sending recover_ack")
+    # logging.info(f"{state.id}: sending recover_ack")
     recv_ack_msg = Message(msg_type = MT.RECOVERY_ACK, source = state.id, recovery_id = self.recovery_id)   
     
     state.to_coordinator(recv_ack_msg) 
@@ -249,11 +254,15 @@ class CmdHandler(threading.Thread):
           logging.exception(e)
 
   def word_count(self):
-    # logging.info(f"Reading stream {self.my_stream} from {self.state.last_stream_id}")
+    # logging.info(f"{self.state.id}Reading stream {self.my_stream} from {self.state.last_stream_id}, recovery is {self.state.last_recovery_id}")
+    while(True):
+      if (not self.state.is_recovering):
+        break 
+    
     result = self.rds.xread({self.my_stream: self.state.last_stream_id}, count = 1)
     if not result:
       self.state.is_wc_done = True
-      logging.info(f"{self.state.id} finished reading its stream!")
+      # logging.info(f"{self.state.id} finished reading its stream!")
       logging.info(f"{self.state.id} telling the coordinator that I am done!")
       done_msg = Message(msg_type=MT.DONE, source=self.state.id, recovery_id = self.state.last_recovery_id)
       self.state.to_coordinator(done_msg)
@@ -268,6 +277,8 @@ class CmdHandler(threading.Thread):
       word_counts = Counter(tokens)
       for word, count in word_counts.items():
         r_idx = self.state.word_2_socket(word)
+
+        # logging.info(f"{self.state.id}: Reading stream {self.my_stream} from {self.state.last_stream_id}, recovery is {self.state.last_recovery_id}, word is {word}, count is {count}")
         msg = Message(msg_type=MT.WORD_COUNT, source=self.state.id, key=word, value=count, last_recovery_id = self.state.last_recovery_id)
         self.state.to_reducer(r_idx, msg)
         # r_sock.sendall(msg_bytes)
@@ -304,14 +315,14 @@ class Mapper(Process):
       try:
         response, _ = coordinator_conn.recvfrom(1024)
         message: Message = Message.deserialize(response)
-        logging.info(f"{self.id} received message of type {message.msg_type.name} from {message.source}")
+        # logging.info(f"{self.id} received message of type {message.msg_type.name} from {message.source}")
         # The work to be done after receiving this message is put in command queue, so that cmd thread
         # can process it and take actions. 
         if message.msg_type == MT.CHECKPOINT:
           recovery_id = message.kwargs['recovery_id']
           checkpoint_id = message.kwargs['checkpoint_id']
-          logging.info(f"{self.id} received checkpoint marker from {message.source} "
-                       f"with id = {checkpoint_id} and recovery_id = {recovery_id}")
+          # logging.info(f"{self.id} received checkpoint marker from {message.source} "
+                      #  f"with id = {checkpoint_id} and recovery_id = {recovery_id}")
           try:
             cmd_q.put(Checkpoint(checkpoint_id=checkpoint_id, recovery_id=recovery_id))
           except Exception as e:
@@ -320,8 +331,8 @@ class Mapper(Process):
           # why no try except here like for checkpoint 
           recovery_id = message.kwargs['recovery_id']
           checkpoint_id = message.kwargs['checkpoint_id']
-          logging.info(f"{self.id} received recover request from {message.source} "
-                       f"with id = {checkpoint_id} and recovery_id = {recovery_id}")
+          # logging.info(f"{self.id} received recover request from {message.source} "
+                      #  f"with id = {checkpoint_id} and recovery_id = {recovery_id}")
           cmd_q.put(Recover(checkpoint_id=checkpoint_id, recovery_id=recovery_id))
         elif message.msg_type == MT.EXIT:
           # why no try except here like for checkpoint 

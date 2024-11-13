@@ -115,13 +115,12 @@ class CkptAckRecvMsg(RcvMsg):
     return True 
 
   def update(self, state: CoordinatorState, source: str) -> Optional[PHASE]:
-    pass
     # TODO: Take appropriate action when coordinator receives checkpoint_ack message from a worker\
     # update state of worker. update last_ckpt_id 
     # if all workers last_cp_id = next_cp_id, then increment next_cp_id and go to cp phase 
-    logging.info(f"Coord: received cp ack from {source}, ckpt_id = {self.checkpoint_id}, recv_id = {self.recovery_id}")
+    # logging.info(f"Coord: received cp ack from {source}, ckpt_id = {self.checkpoint_id}, recv_id = {self.recovery_id}")
     if (state.next_recovery_id != self.recovery_id):
-      logging.warning(f"Coord: not handling in-flight messages, msg recv_id = {self.recovery_id}, coord recv_id = {state.next_recovery_id}")
+      # logging.warning(f"Coord: not handling in-flight messages, msg recv_id = {self.recovery_id}, coord recv_id = {state.next_recovery_id}")
       return None 
     state.workers[source].last_cp_id = self.checkpoint_id
     ws = state.workers[source] 
@@ -132,7 +131,7 @@ class CkptAckRecvMsg(RcvMsg):
     #     ws.done_is_checkpointed = False 
     if (self.all_acked(state)):
       state.next_cp_id += 1 
-      logging.info(f"Coord: updating next cp id to {state.next_cp_id}") 
+      # logging.info(f"Coord: updating next cp id to {state.next_cp_id}") 
       return PHASE.CP 
     else:
       return None
@@ -146,11 +145,11 @@ class LastCkptAckRecvMsg(RcvMsg):
 
   def update(self, state: CoordinatorState, source: str) -> Optional[PHASE]:
     # TODO: Take appropriate action when coordinator receives last_checkpoint_ack message from a worker
-    logging.info(f"Received LAST_CKPT_ACK message from {source}")
+    # logging.info(f"Received LAST_CKPT_ACK message from {source}")
     assert(state.next_cp_id == 0) 
-    logging.info(f"Coord: received LAST_CKPT_ACK from {source},  recv_id = {self.recovery_id}")
+    # logging.info(f"Coord: received LAST_CKPT_ACK from {source},  recv_id = {self.recovery_id}")
     if (state.next_recovery_id != self.recovery_id):
-      logging.warning(f"Coord: not handling in-flight messages, msg recv_id = {self.recovery_id}, coord recv_id = {state.next_recovery_id}")
+      # logging.warning(f"Coord: not handling in-flight messages, msg recv_id = {self.recovery_id}, coord recv_id = {state.next_recovery_id}")
       return None 
 
     state.workers[source].last_checkpoint_done = True
@@ -166,11 +165,11 @@ class LastCkptAckRecvMsg(RcvMsg):
         if (ws.last_checkpoint_done == False):
           are_all_workers_done = False 
     if are_all_workers_done:
-      logging.info(f"Coord: moving to exit phase")    
+      # logging.info(f"Coord: moving to exit phase")    
       return PHASE.EXITING
     else:
-      logging.info("Coord: not moving to exit phase, some workers pending")
-    return None
+      # logging.info("Coord: not moving to exit phase, some workers pending")
+      return None
 
 class RecoveryAckRecvMsg(RcvMsg):
   def __init__(self, recovery_id: int):
@@ -195,10 +194,10 @@ class RecoveryAckRecvMsg(RcvMsg):
 
   def update(self, state: CoordinatorState, source: str) -> Optional[PHASE]:
     # TODO: Take appropriate action when coordinator receives recovery_ack message from worker
-    logging.info(f"Coord: recovery ack received from {source} with recv id {self.recovery_id}")
+    # logging.info(f"Coord: recovery ack received from {source} with recv id {self.recovery_id}")
     if (self.recovery_id != state.next_recovery_id):
       # logging.info(f"Coord: received cp ack from {source}, ckpt_id = {self.checkpoint_id}, recv_id = {self.recovery_id}"
-      logging.warning(f"Coord: not handling in-flight messages, msg recv_id = {self.recovery_id}, coord recv_id = {state.next_recovery_id}")
+      # logging.warning(f"Coord: not handling in-flight messages, msg recv_id = {self.recovery_id}, coord recv_id = {state.next_recovery_id}")
       return None 
     if (self.is_mapper(source)):
       assert(state.phase == PHASE.RECOVER_MAPPER)
@@ -209,13 +208,13 @@ class RecoveryAckRecvMsg(RcvMsg):
     state.workers[source].recovery_id = self.recovery_id
     if (state.phase == PHASE.RECOVER_REDUCER):
       if (self.all_recovered(state, check_mapper = False)):
-        logging.info(f"Coord: all reducers returned recovery ack, going to RECOVER_MAPPER")
+        # logging.info(f"Coord: all reducers returned recovery ack, going to RECOVER_MAPPER")
         return PHASE.RECOVER_MAPPER
       else:
         return None
     elif(state.phase == PHASE.RECOVER_MAPPER):
       if (self.all_recovered(state, check_mapper = True)):
-        logging.info(f"Coord: all mappers returned recovery ack, going to CP")
+        # logging.info(f"Coord: all mappers returned recovery ack, going to CP")
         return PHASE.CP
       else:
         return None
@@ -229,10 +228,10 @@ class DoneRecvMsg(RcvMsg):
 
 
   def update(self, state: CoordinatorState, source: str) -> Optional[PHASE]:
-    logging.info(f"Received DONE message from {source}")
+    # logging.info(f"Received DONE message from {source}")
     if (self.recovery_id != state.next_recovery_id):
       # logging.info(f"Coord: received cp ack from {source}, ckpt_id = {self.checkpoint_id}, recv_id = {self.recovery_id}"
-      logging.warning(f"Coord: not handling in-flight messages, msg recv_id = {self.recovery_id}, coord recv_id = {state.next_recovery_id}")
+      # logging.warning(f"Coord: not handling in-flight messages, msg recv_id = {self.recovery_id}, coord recv_id = {state.next_recovery_id}")
       return None 
 
     assert state.workers[source].is_mapper == True, "Only mappers should send DONE message"
@@ -246,7 +245,7 @@ class DoneRecvMsg(RcvMsg):
     if are_all_mappers_done:
       # return PHASE.EXITING
       # TODO: Move to LAST_CP instead
-      logging.info(f"Coord: moving to last_Cp phase")
+      # logging.info(f"Coord: moving to last_Cp phase")
       state.next_cp_id = 0 
       return PHASE.LAST_CP
     return None
@@ -304,10 +303,10 @@ class RecvThread(threading.Thread):
       self.state.next_recovery_id += 1
 
       time.sleep(0.2)
-      logging.info(f"Coord: starting recovery, putting in queue")
-      logging.info(f"Coord: moving from {self.state.phase.name} to RECOVERY_REDUCER") 
+      # logging.info(f"Coord: starting recovery, putting in queue")
+      # logging.info(f"Coord: moving from {self.state.phase.name} to RECOVERY_REDUCER") 
 
-      logging.info(f"Coord: new recovery id is {self.state.next_recovery_id}")
+      # logging.info(f"Coord: new recovery id is {self.state.next_recovery_id}")
       self.state.phase = PHASE.RECOVER_REDUCER
       self.phase_queue.put(self.state.phase)
       
@@ -384,9 +383,9 @@ class SendThread(threading.Thread):
     msg_bytes = msg_to_send.encode() 
     for _,ws in self.state.workers.items():
       if (ws.is_mapper):
-        logging.info(f"Coord({phase}): sending marker to {ws.id}")
+        # logging.info(f"Coord({phase}): sending marker to {ws.id}")
         self.state.sock.sendto(msg_bytes, ws.addr)
-    logging.info(f"Coord({phase}): sent all markers")
+    # logging.info(f"Coord({phase}): sent all markers")
 
   def send_recovery(self, to_mappers):
     if (to_mappers):
@@ -403,16 +402,16 @@ class SendThread(threading.Thread):
         if (ws.is_mapper):
           continue
   
-      logging.info(f"Coord: sending recovery to {ws.id}, ckpt id: {self.state.next_cp_id}, recv_id: {self.state.next_recovery_id}")
+      # logging.info(f"Coord: sending recovery to {ws.id}, ckpt id: {self.state.next_cp_id}, recv_id: {self.state.next_recovery_id}")
       self.state.sock.sendto(msg_bytes, ws.addr)
-    logging.info(f"Coord: sent all recovery msg")
+    # logging.info(f"Coord: sent all recovery msg")
 
   """
     *_phase methods define what to do in a certain PHASE.
   """
   def cp_phase(self):
     if self.state.phase != PHASE.CP:
-      logging.error(f"Coord: phase mismatch for cp, phse is {self.state.phase}")
+      logging.error(f"Coord: phase mismatch for cp, phase is {self.state.phase}")
       return
     # TODO: complete the behavior when system is in CP phase
     # have to send markers to mappers with ckpt id  next_cp_id and recovery_id next_recovery_id 
@@ -430,15 +429,20 @@ class SendThread(threading.Thread):
     if (self.state.phase == PHASE.RECOVER_REDUCER):
       # self.state.next_recovery_id += 1
       rollback_checkpoint_id = self.state.last_completed_checkpoint_id()
-      logging.info(f"Coord: rollback id is {rollback_checkpoint_id}") 
-      logging.info(f"Coord: recovery id updated to {self.state.next_recovery_id}")
+      # logging.info(f"Coord: rollback id is {rollback_checkpoint_id}") 
+      # logging.info(f"Coord: recovery id updated to {self.state.next_recovery_id}")
       # reset all workers 
       for _, ws in self.state.workers.items():
         ws.reset() 
-        ws.last_cp_id = rollback_checkpoint_id # ? should update here 
+        if (rollback_checkpoint_id != -1):
+           ws.last_cp_id = rollback_checkpoint_id  
+        else:
+          ws.last_cp_id = 0  # no checkpoints made 
       # global state 
-      self.state.next_cp_id = rollback_checkpoint_id
-
+      if (rollback_checkpoint_id != -1):
+        self.state.next_cp_id = rollback_checkpoint_id
+      else:
+        self.state.next_cp_id = 0 #  will be set to 1 on complete recovery
       # send message to all reducers
       self.send_recovery(to_mappers=False)
     else:

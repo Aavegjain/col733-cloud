@@ -42,6 +42,7 @@ class ReducerState:
   last_recovery_id: int = 0
   last_cp_id: int = 0
   client_sockets: list[socket.socket] = field(default_factory=list)
+  q_has_ckpt = False 
 
   def __post_init__(self):
     # creating connections with coordinator
@@ -72,7 +73,7 @@ class ReducerState:
     logging.info(f"{self.id}: recovering from {recovery_id}")
     if (checkpoint_id < 0):
       # clear wc 
-      logging.info(f"{self.id}: resetting wc since ckpt_id={self.checkpoint_id}")
+      logging.info(f"{self.id}: resetting wc since ckpt_id={checkpoint_id}")
       self.wc = defaultdict(int)
     else:
       filename = f"checkpoints/{self.id}_{checkpoint_id}.txt"
@@ -87,8 +88,11 @@ class ReducerState:
         logging.error(f"{self.id}: recovery failed: {e}") 
         return 
     self.last_recovery_id = recovery_id
-    self.last_cp_id = checkpoint_id 
-
+    if (checkpoint_id != -1):
+      self.last_cp_id = checkpoint_id 
+    else:
+      self.last_cp_id = 0 # back to initial
+      
   def exit(self):
     # Break existing map threads by re-opening sockets. while loop will create new ones
     logging.info(f"{self.id} is exiting! The local word count is: {self.wc}")
@@ -126,17 +130,18 @@ class CPMarker(Cmd):
     # 1. checkpoint and update state  2. send ack  
     if (self.recovery_id == state.last_recovery_id):
       logging.info(f"{state.id}: checkpointing for ckpt id: {self.checkpoint_id} and red_id: {self.recovery_id}")
+      state.q_has_ckpt = False 
       state.checkpoint(self.checkpoint_id) 
       state.last_cp_id = self.checkpoint_id # done also in state.checkpoint
 
-      logging.info(f"{state.id}: sending checkpoint ack to coord")
+      # logging.info(f"{state.id}: sending checkpoint ack to coord")
       # send ack to coordinator
       if (self.checkpoint_id != 0):
         ckpt_ack_msg = Message(msg_type = MT.CHECKPOINT_ACK, source = state.id, checkpoint_id = self.checkpoint_id, recovery_id = self.recovery_id)  
       else:
         ckpt_ack_msg = Message(msg_type = MT.LAST_CHECKPOINT_ACK , source = state.id, checkpoint_id = self.checkpoint_id, recovery_id = self.recovery_id)   
       state.to_coordinator(ckpt_ack_msg) 
-      logging.info(f"{state.id}: checkpoint complete for id {self.checkpoint_id}" )
+      # logging.info(f"{state.id}: checkpoint complete for id {self.checkpoint_id}" )
 
     else:
       logging.warning(
@@ -152,7 +157,7 @@ class Recover(Cmd):
 
   def handle(self, state: ReducerState):
     # TODO: This reducer need to recover from failure.
-    logging.info(f"{state.id}: recovering state")
+    # logging.info(f"{state.id}: recovering state")
     state.recover(self.recovery_id, self.checkpoint_id) 
     # logging.info(f"{state.id}: resetting barrier")
     state.barrier.reset() 
@@ -160,7 +165,7 @@ class Recover(Cmd):
     recv_ack_msg = Message(msg_type = MT.RECOVERY_ACK, source = state.id, recovery_id = self.recovery_id)   
     state.to_coordinator(recv_ack_msg) 
 
-    logging.info(f"{state.id}: recovery complete for recv id {self.recovery_id}" )
+    # logging.info(f"{state.id}: recovery complete for recv id {self.recovery_id}" )
 
     
 
@@ -178,7 +183,7 @@ class WC(Cmd):
     else:
       pass
       # logging.warning(
-        # f"Ignoring in-flight messages with recovery_id = {self.recovery_id}.My recovery_id = {state.last_recovery_id}")
+        # f"Ignoring in-flight messages from with recovery_id = {self.recovery_id}.My recovery_id = {state.last_recovery_id}, word is {self.word}, count is {self.count}")
 
 
 class Exit(Cmd):
@@ -221,7 +226,7 @@ class Reducer(Process):
     for i in range(num_mappers):
       self.cp_marker[i] = -1
     self.update_mapper_idx = 0 # the mapper which puts the ckpt cmd in queue 
-    self.has_q = False 
+  
 
   def send_heartbeat(self, heartbeat_socket: socket.socket):
     coordinator_addr = ("localhost", COORDINATOR_PORT)
@@ -249,7 +254,7 @@ class Reducer(Process):
       except Exception as e:
         logging.error(f"Error: {e}")
 
-  def handle_mappers(self, client_socket: socket.socket, cmd_q: queue.Queue[Cmd], barrier: threading.Barrier):
+  def handle_mappers(self, client_socket: socket.socket, cmd_q: queue.Queue[Cmd], barrier: threading.Barrier, state: ReducerState):
     try:
       while True:
         data = recvall(client_socket, 1024)
@@ -262,46 +267,78 @@ class Reducer(Process):
         # Take appropriate actions. 
         # HINT: Process the message, and put the work to do in cmd queue
 
+        # if (message.msg_type == MT.FWD_CHECKPOINT):
+        #   mapper_name = message.source 
+        #   assert(mapper_name.startswith("Mapper")) 
+        #   mapper_id = int(mapper_name[7:])  
+        #   logging.info(f"{self.id}: checkpoint marker received from {mapper_name}")
+        #   if (mapper_id != self.update_mapper_idx):
+        #     self.cp_marker[mapper_id] = int(message.kwargs.get("checkpoint_id"))
+        #     logging.info(f"{self.id}: set cp_marker for mapper_{mapper_id} to {self.cp_marker[mapper_id]}")
+          
+        #   if (mapper_id == self.update_mapper_idx):
+        #     recovery_id = message.kwargs.get("recovery_id")
+        #     ckpt_id = int(message.kwargs.get("checkpoint_id"))
+        #     # logging.info(f"{self.id}: {self.update_mapper_idx} putting marker {ckpt_id} and recovery id: {recovery_id}")
+        #     cmd_q.put(CPMarker(ckpt_id, recovery_id))
+        #     self.cp_marker[mapper_id] = ckpt_id
+        #     logging.info(f"{self.id}: set cp_marker for (update)mapper_{mapper_id} to {self.cp_marker[mapper_id]}")
+        #   else:
+        #     while(True):
+        #       if (self.cp_marker[self.update_mapper_idx] == self.cp_marker[mapper_id]):
+        #         break
+        #   try:
+        #     barrier.wait() 
+        #     logging.info(f"{self.id}: barrier exited for {mapper_id}")
+        #   except threading.BrokenBarrierError:
+        #     logging.info(f"{self.id}: barrier exited coz of recovery for {mapper_id}")
+        #   logging.info(f"{self.id}: exited barrier for mapper_{mapper_id}")
+        #   self.cp_marker[mapper_id] = -1 
+
+
         if message.msg_type == MT.FWD_CHECKPOINT:  # received checkpoint marker
           # TODO
           mapper_name = message.source 
           assert(mapper_name.startswith("Mapper")) 
           mapper_id = int(mapper_name[7:])  
-          logging.info(f"{self.id}: checkpoint marker received from mapper {mapper_name}, mapper_id {mapper_id}")
-          self.cp_marker[mapper_id] = int(message.kwargs.get("checkpoint_id"))
+          ckpt_id = int(message.kwargs.get("checkpoint_id"))
+          recv_id = int(message.kwargs.get("recovery_id")) 
+          logging.info(f"{self.id}: checkpoint marker received from mapper {mapper_name}, mapper_id {mapper_id}, ckpt_id: {ckpt_id}, recv_id: {recv_id}")
+          
+          if (recv_id != state.last_recovery_id):
+            logging.info(f"{self.id}: ignoring msg since recv_id:{recv_id} doesnt match with mine {state.last_recovery_id}")
+            continue
+
+          if (mapper_id != self.update_mapper_idx):
+            self.cp_marker[mapper_id] = int(message.kwargs.get("checkpoint_id"))
+          else:
+            self.cp_marker[mapper_id] = -2 
           try:
             barrier.wait() 
             logging.info(f"{self.id}: barrier exited")
           except threading.BrokenBarrierError:
-            logging.info(f"{self.id}: barrier exited coz of recovery")
+            logging.info(f"{self.id}: barrier exited coz of recovery ")
           
           if (mapper_id == self.update_mapper_idx):
-            try:
-              recovery_id = message.kwargs.get("recovery_id")
-            except Exception as e:
-              logging.error(f"Error: {e}, error in retrieving message.kwargs for recovery id")
-              logging.info(f"kwargs are {kwargs}")
+            recovery_id = message.kwargs.get("recovery_id")
             
-            logging.info(f"{self.id}: {self.update_mapper_idx} putting marker {self.cp_marker[self.update_mapper_idx]} and recovery id: {recovery_id}")
-            cmd_q.put(CPMarker(self.cp_marker[self.update_mapper_idx], recovery_id))
-          # else:
-          #   pass 
-
+            ckpt = int(message.kwargs.get("checkpoint_id"))
+            # logging.info(f"{self.id}: {self.update_mapper_idx} putting marker {ckpt} and recovery id: {recovery_id}")
+            cmd_q.put(CPMarker(ckpt, recovery_id))
+            self.cp_marker[mapper_id] = int(message.kwargs.get("checkpoint_id"))
+            # for i in range(self.num_mappers):
+              # self.cp_marker[i] = -2
           else:
-            # while True:
-              # if (self.has_q):
-              #   break 
-              # else:
-              #   time.sleep(0.1)
-            logging.info(f"{self.id}: sleeping since {self.update_mapper_idx} putting marker")
-            time.sleep(0.1)
+            # logging.info(f"{self.id}: sleeping since {self.update_mapper_idx} putting marker")
+            # time.sleep(0.1)
+            while(True):
+              # logging.info(f"{self.id}: sleeping since {self.update_mapper_idx} putting marker")
+              # time.sleep(0.05)
+              pass 
+              if (self.cp_marker[mapper_id] == self.cp_marker[self.update_mapper_idx]):
+                break 
+          # self.cp_marker[mapper_id] = -2   
 
-          # try:
-          #   barrier.wait() 
-          #   logging.info(f"{self.id}: barrier2 exited")
-          # except threading.BrokenBarrierError:
-          #   logging.info(f"{self.id}: barrier2 exited coz of recovery")
-          # # barrier.wait() 
           logging.info(f"{self.id}: mapper {mapper_name} thread will now process next msg") 
         else:
           assert message.msg_type == MT.WORD_COUNT
@@ -342,7 +379,7 @@ class Reducer(Process):
         client_socket, _ = state.server_socket.accept()
         state.client_sockets.append(client_socket)
         logging.info(f"{self.id} Accepted connection from mapper")
-        client_handler = threading.Thread(target=self.handle_mappers, args=(client_socket, cmd_q, state.barrier))
+        client_handler = threading.Thread(target=self.handle_mappers, args=(client_socket, cmd_q, state.barrier, state))
         client_handler.start()
     except Exception as e:
       logging.error(f"Error: {e}")
